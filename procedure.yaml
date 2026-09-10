@@ -1,0 +1,180 @@
+name: Actuator End-of-Line Dyno Test
+version: 0.1.0
+description: End-of-line dynamometer test of a humanoid joint actuator (frameless motor, 100:1 harmonic reducer, output encoder). Drive identity and configuration, time-scaled run-in with the no-load running torque, output torque constant under stall, sixteen-point efficiency map, torque ripple with order tracking over one revolution.
+
+unit:
+  auto_identify: true
+  serial_number:
+    description: "Scan the actuator housing label"
+    placeholder: "ACT-HIP-000000"
+    pattern: "^ACT-[A-Z]{3}-\\d{6}$"
+    default_value: "ACT-HIP-004812"
+  part_number:
+    default_value: "ACT-R100-60NM"
+  batch_number:
+    default_value: "WK-2026-37"
+
+plugs:
+  - name: Actuator Bench
+    description: "Four-quadrant dyno, inline torque transducer with angle, bus power analyzer, EtherCAT drive (mock, one plug per bench)"
+    python: plugs.actuator_bench:ActuatorBench
+    key: bench
+
+setup:
+  - name: Identify
+    key: identify
+    python: phases.identify
+    measurements:
+      - name: Firmware Version
+        key: firmware_version
+        validators:
+          - {operator: matches, expected_value: "^3\\.\\d+\\.\\d+$"}
+      - name: Drive Config
+        key: drive_config
+        description: Current limit, pole pairs, commutation mode and brake setting as one object; a wrong pole-pair count runs and produces numbers, all of them wrong.
+        validators:
+          - operator: "=="
+            expected_value:
+              current_limit_a: 30
+              pole_pairs: 21
+              commutation: sincos
+              brake: none
+      - name: Temperature Start
+        key: temperature_start_c
+        unit: °C
+        validators:
+          - {operator: ">=", expected_value: 18.0}
+          - {operator: "<=", expected_value: 28.0}
+
+main:
+  - name: Run In
+    key: run_in
+    python: phases.run_in
+    timeout: 30m
+    ui:
+      components:
+        - key: run_in_progress
+          type: progress
+          label: "Run-in at 2000 rpm input"
+          description: "10 min unloaded, no-load torque logged every 10 s"
+          default_value: 0
+          max: 100
+    measurements:
+      - name: No-Load Torque
+        key: no_load
+        title: Input-referred no-load running torque during the run-in
+        x_axis:
+          legend: Time
+          unit: min
+        y_axis:
+          - legend: Torque
+            key: torque
+            unit: Nm
+            aggregations:
+              - type: final_nm
+                unit: Nm
+                validators:
+                  - {operator: "<=", expected_value: 0.20}
+              - type: settle_pct
+                unit: "%"
+      - name: Temperature After Run-In
+        key: temperature_after_run_in_c
+        unit: °C
+        validators:
+          - {operator: "<=", expected_value: 45.0}
+
+  - name: Torque Constant
+    key: torque_constant
+    python: phases.torque_constant
+    depends_on: [run_in]
+    measurements:
+      - name: Stall
+        key: stall
+        title: Output torque against q-axis current, dyno locked
+        x_axis:
+          legend: Current
+          unit: A
+        y_axis:
+          - legend: Torque
+            key: torque
+            unit: Nm
+            aggregations:
+              - type: kt_nm_per_a
+                unit: Nm/A
+                validators:
+                  - {operator: ">=", expected_value: 8.5}
+                  - {operator: "<=", expected_value: 9.6}
+              - type: linearity_pct
+                unit: "%"
+                validators:
+                  - {operator: "<=", expected_value: 2.0}
+              - type: friction_knee_nm
+                unit: Nm
+                validators:
+                  - {operator: "<=", expected_value: 3.0}
+
+  - name: Efficiency Map
+    key: efficiency_map
+    python: phases.efficiency_map
+    depends_on: [torque_constant]
+    timeout: 10m
+    measurements:
+      - name: Efficiency
+        key: efficiency
+        title: Efficiency at sixteen operating points, four speeds by four torques
+        x_axis:
+          legend: Point
+        y_axis:
+          - legend: Speed
+            key: speed
+            unit: rpm
+          - legend: Torque
+            key: torque
+            unit: Nm
+          - legend: Efficiency
+            key: efficiency
+            unit: "%"
+            aggregations:
+              - type: at_rated_pct
+                unit: "%"
+                validators:
+                  - {operator: ">=", expected_value: 72.0}
+              - type: min_pct
+                unit: "%"
+                validators:
+                  - {operator: ">=", expected_value: 50.0}
+
+  - name: Torque Ripple
+    key: torque_ripple
+    python: phases.torque_ripple
+    depends_on: [efficiency_map]
+    measurements:
+      - name: Ripple
+        key: ripple
+        title: Torque over one output revolution at 3 rpm under 30 Nm
+        x_axis:
+          legend: Angle
+          unit: °
+        y_axis:
+          - legend: Torque
+            key: torque
+            unit: Nm
+            aggregations:
+              - type: pp_pct_rated
+                unit: "%"
+                validators:
+                  - {operator: "<=", expected_value: 3.0}
+              - type: dominant_order
+                validators:
+                  - {operator: "==", expected_value: 200}
+
+teardown:
+  - name: Park
+    key: park
+    python: phases.park
+    measurements:
+      - name: Temperature End
+        key: temperature_end_c
+        unit: °C
+        validators:
+          - {operator: "<=", expected_value: 60.0}
